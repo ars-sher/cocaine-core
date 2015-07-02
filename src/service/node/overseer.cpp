@@ -17,6 +17,9 @@
 
 #include <boost/accumulators/statistics/extended_p_square.hpp>
 
+#include <boost/range/adaptors.hpp>
+#include <boost/range/algorithm.hpp>
+
 namespace ph = std::placeholders;
 
 using namespace cocaine;
@@ -74,117 +77,164 @@ overseer_t::get_queue() {
     return queue.synchronize();
 }
 
+namespace keys {
+
+const std::string UPTIME   = "uptime";
+const std::string REQUESTS = "requests";
+const std::string QUEUE    = "queue";
+const std::string TIMINGS  = "timings";
+const std::string POOL     = "pool";
+const std::string LOAD     = "load";
+
+namespace requests {
+    const std::string ACCEPTED = "accepted";
+    const std::string REJECTED = "rejected";
+} // namespace requests
+
+namespace queue {
+    const std::string CAPACITY         = "capacity";
+    const std::string DEPTH            = "depth";
+    const std::string OLDEST_EVENT_AGE = "oldest_event_age";
+} // namespace queue
+
+namespace pool {
+    const std::string ACTIVE   = "active";
+    const std::string IDLE     = "idle";
+    const std::string CAPACITY = "capacity";
+    const std::string SLAVES   = "slaves";
+} // namespace pool
+
+namespace slaves {
+    const std::string TX                    = "load:tx";
+    const std::string RX                    = "load:rx";
+    const std::string LOAD                  = "load:total";
+    const std::string ACCEPTED              = "accepted";
+    const std::string OLDEST_CHANNEL_AGE    = "oldest_channel_age";
+    const std::string LAST_CHANNEL_ACTIVITY = "last_channel_activity";
+    const std::string STATE                 = "state";
+    const std::string UPTIME                = "uptime";
+} // namespace slaves
+
+} // namespace keys
+
 dynamic_t::object_t
 overseer_t::info() const {
     dynamic_t::object_t result;
 
     const auto now = std::chrono::high_resolution_clock::now();
 
-    // Application total uptime in seconds.
-    result["uptime"] = std::chrono::duration_cast<
+    // Prepare application specific info.
+    result[keys::UPTIME] = std::chrono::duration_cast<
         std::chrono::seconds
     >(now - birthstamp).count();
 
+    // Prepare channels info.
     {
-        // Incoming requests.
-        dynamic_t::object_t ichannels;
-        ichannels["accepted"] = stats.accepted.load();
-        ichannels["rejected"] = stats.rejected.load();
+        dynamic_t::object_t stat;
+        stat[keys::requests::ACCEPTED] = stats.accepted.load();
+        stat[keys::requests::REJECTED] = stats.rejected.load();
 
-        result["channels"] = ichannels;
+        result[keys::REQUESTS] = stat;
     }
 
+    // Pending events queue info.
     {
-        // Pending events queue.
-        dynamic_t::object_t iqueue;
-        iqueue["capacity"] = profile().queue_limit;
+        dynamic_t::object_t stat;
+        stat[keys::queue::CAPACITY] = profile().queue_limit;
+
         queue.apply([&](const queue_type& queue) {
+            stat[keys::queue::DEPTH] = queue.size();
+
             typedef queue_type::value_type value_type;
 
-            const auto it = std::min_element(queue.begin(), queue.end(),
-                [&](const value_type& current, const value_type& first) -> bool {
-                    return current.event.birthstamp < first.event.birthstamp;
-                }
-            );
-
-            if (it != queue.end()) {
-                const auto age = std::chrono::duration<
-                    double,
-                    std::chrono::milliseconds::period
-                >(now - it->event.birthstamp).count();
-
-                iqueue["age"] = age;
+            if (queue.empty()) {
+                stat[keys::queue::OLDEST_EVENT_AGE] = 0;
             } else {
-                iqueue["age"] = 0;
-            }
+                const auto min = *boost::min_element(queue |
+                    boost::adaptors::transformed(+[](const value_type& cur) {
+                        return cur.event.birthstamp;
+                    })
+                );
 
-            iqueue["depth"] = queue.size();
+                const auto age = std::chrono::duration_cast<
+                    std::chrono::milliseconds
+                >(now - min).count();
+
+                stat[keys::queue::OLDEST_EVENT_AGE] = age;
+            }
         });
 
-        result["queue"] = iqueue;
+        result[keys::QUEUE] = stat;
     }
 
+    // Response time quantiles over all events (not sure it makes sence).
     {
-        // Response time quantiles over all events.
-        dynamic_t::object_t iquantiles;
+        dynamic_t::object_t stat;
 
-        char buf[16];
+        std::array<char, 16> buf;
         for (const auto& quantile : stats.quantiles()) {
-            if (std::snprintf(buf, sizeof(buf) / sizeof(char), "%.2f%%", quantile.probability)) {
-                iquantiles[buf] = quantile.value;
+            if (std::snprintf(buf.data(), buf.size(), "%.2f%%", quantile.probability)) {
+                stat[buf.data()] = quantile.value;
             }
         }
 
-        result["timings"] = iquantiles;
+        result[keys::TIMINGS] = stat;
     }
 
+    // Current and cumulative slaves info.
     pool.apply([&](const pool_type& pool) {
-        collector_t collector(pool);
+        const collector_t collector(pool);
 
-        dynamic_t::object_t slaves;
-        for (auto it = pool.begin(); it != pool.end(); ++it) {
-            const auto slave_stats = it->second.stats();
+        dynamic_t::object_t sstat;
+        for (const auto& kv : pool) {
+            const auto& id    = kv.first;
+            const auto& slave = kv.second;
 
-            dynamic_t::object_t stat = {
-                { "state",  it->second.state() },
-                { "uptime", it->second.uptime() },
-                { "load", slave_stats.load },
-                { "tx",   slave_stats.tx },
-                { "rx",   slave_stats.rx },
-                { "total", slave_stats.total },
-            };
+            const auto sstats = slave.stats();
 
-            if (slave_stats.age) {
-                const auto duration = std::chrono::duration<
-                    double,
-                    std::chrono::milliseconds::period
-                >(now - *slave_stats.age).count();
-                stat["age"] = duration;
+            dynamic_t::object_t stat;
+            stat[keys::slaves::TX]       = sstats.tx;
+            stat[keys::slaves::RX]       = sstats.rx;
+            stat[keys::slaves::LOAD]     = sstats.load;
+            stat[keys::slaves::ACCEPTED] = sstats.total;
+            stat[keys::slaves::STATE]    = slave.state();
+            stat[keys::slaves::UPTIME]   = slave.uptime();
+
+            if (sstats.age) {
+                const auto duration = std::chrono::duration_cast<
+                    std::chrono::milliseconds
+                >(now - *sstats.age).count();
+                stat[keys::slaves::OLDEST_CHANNEL_AGE] = duration;
             } else {
-                stat["age"] = dynamic_t::null;
+                stat[keys::slaves::OLDEST_CHANNEL_AGE] = dynamic_t::null;
             }
 
-            if (slave_stats.activity) {
+            if (sstats.activity) {
                 const auto duration = std::chrono::duration_cast<
                     std::chrono::seconds
-                >(now - *slave_stats.activity).count();
-                stat["last_activity"] = duration;
+                >(now - *sstats.activity).count();
+                stat[keys::slaves::LAST_CHANNEL_ACTIVITY] = duration;
             } else {
-                stat["last_activity"] = dynamic_t::null;
+                stat[keys::slaves::LAST_CHANNEL_ACTIVITY] = dynamic_t::null;
             }
 
-            slaves[it->first] = stat;
+            sstat[id] = stat;
         }
 
-        result["pool"] = dynamic_t::object_t({
-            { "active",   collector.active },
-            { "idle",     pool.size() - collector.active },
-            { "capacity", profile().pool_limit },
-            { "slaves", slaves }
-        });
+        // Slaves pool info.
+        {
+            dynamic_t::object_t stat;
+
+            stat[keys::pool::ACTIVE]   = collector.active;
+            stat[keys::pool::IDLE]     = pool.size() - collector.active;
+            stat[keys::pool::CAPACITY] = profile().pool_limit;
+            stat[keys::pool::SLAVES]   = sstat;
+
+            result[keys::POOL] = stat;
+        }
 
         // Cumulative load on the app over all the slaves.
-        result["load"] = collector.cumload;
+        result[keys::LOAD] = collector.cumload;
     });
 
 
