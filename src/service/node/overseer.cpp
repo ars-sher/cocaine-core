@@ -107,7 +107,7 @@ namespace pool {
 namespace slaves {
     const std::string TX                    = "load:tx";
     const std::string RX                    = "load:rx";
-    const std::string LOAD                  = "load:total";
+    const std::string LOAD                  = "load";
     const std::string ACCEPTED              = "accepted";
     const std::string OLDEST_CHANNEL_AGE    = "oldest_channel_age";
     const std::string LAST_CHANNEL_ACTIVITY = "last_channel_activity";
