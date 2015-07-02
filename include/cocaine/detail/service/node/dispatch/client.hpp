@@ -15,17 +15,12 @@ namespace cocaine {
 
 class state_machine_t;
 
+class channel_t;
+
 /// An adapter for [Client -> Worker] message passing.
 class client_rpc_dispatch_t:
     public dispatch<io::event_traits<io::app::enqueue>::dispatch_type>
 {
-public:
-    /// Called on channel close.
-    ///
-    /// Guaranteed to be called once on either first error or close.
-    typedef std::function<void(const std::error_code&)> callback_type;
-
-private:
     typedef io::event_traits<io::app::enqueue>::dispatch_type incoming_tag;
     typedef io::event_traits<io::worker::rpc::invoke>::dispatch_type outcoming_tag;
     typedef io::protocol<incoming_tag>::scope protocol;
@@ -45,7 +40,7 @@ private:
     /// Upstream to the worker.
     streamed<std::string> stream;
 
-    callback_type callback;
+    std::shared_ptr<channel_t> control;
 
     /// Closed state error code.
     ///
@@ -60,21 +55,29 @@ public:
     client_rpc_dispatch_t(const std::string& name);
 
     void
-    attach(upstream<outcoming_tag> stream, callback_type callback);
+    attach(upstream<outcoming_tag> stream, std::shared_ptr<channel_t> control);
 
-    /// The client has been disconnected without closing its opened channels.
+    /// Discards this part of bidirectional channel.
     ///
-    /// In this case we should call close callback to prevend resource leak.
+    /// Usually this method is called when the client has been disconnected without closing its
+    /// opened channels.
+    /// In this case we should call the close callback given earlier to prevend resource leak.
+    void
+    discard(const std::error_code& ec);
+
     virtual
     void
     discard(const std::error_code& ec) const;
 
-    void
-    discard(const std::error_code& ec);
-
 private:
     void
     finalize();
+
+    void
+    finalize(const std::shared_ptr<channel_t>& control, const std::error_code& ec);
+
+    void
+    update_activity();
 };
 
 } // namespace cocaine

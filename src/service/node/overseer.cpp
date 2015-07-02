@@ -146,6 +146,7 @@ overseer_t::info() const {
             const auto slave_stats = it->second.stats();
 
             dynamic_t::object_t stat = {
+                { "state",  it->second.state() },
                 { "uptime", it->second.uptime() },
                 { "load", slave_stats.load },
                 { "tx",   slave_stats.tx },
@@ -154,13 +155,22 @@ overseer_t::info() const {
             };
 
             if (slave_stats.age) {
-                const auto age = std::chrono::duration<
+                const auto duration = std::chrono::duration<
                     double,
                     std::chrono::milliseconds::period
                 >(now - *slave_stats.age).count();
-                stat["age"] = age;
+                stat["age"] = duration;
             } else {
                 stat["age"] = dynamic_t::null;
+            }
+
+            if (slave_stats.activity) {
+                const auto duration = std::chrono::duration_cast<
+                    std::chrono::seconds
+                >(now - *slave_stats.activity).count();
+                stat["last_activity"] = duration;
+            } else {
+                stat["last_activity"] = dynamic_t::null;
             }
 
             slaves[it->first] = stat;

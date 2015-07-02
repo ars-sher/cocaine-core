@@ -9,6 +9,8 @@ channel_t::channel_t(std::uint64_t id, time_point birthstamp, callback_type call
     id(id),
     birthstamp_(birthstamp),
     callback(std::move(callback)),
+    last_tx_activity(clock_type::now()),
+    last_rx_activity(clock_type::now()),
     state(both),
     watched(false)
 {}
@@ -37,6 +39,21 @@ channel_t::close_both() {
     std::lock_guard<std::mutex> lock(mutex);
     state &= ~(side_t::tx | side_t::rx);
     maybe_notify();
+}
+
+void
+channel_t::update_tx_activity() noexcept {
+    last_tx_activity = clock_type::now();
+}
+
+void
+channel_t::update_rx_activity() noexcept {
+    last_rx_activity = clock_type::now();
+}
+
+channel_t::time_point
+channel_t::last_activity() const {
+    return std::max(last_tx_activity, last_rx_activity);
 }
 
 bool

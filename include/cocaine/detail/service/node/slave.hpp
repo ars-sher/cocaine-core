@@ -81,12 +81,25 @@ struct channel_t {
     io::streaming_slot<io::app::enqueue>::upstream_type downstream;
 };
 
-struct slave_stats_t {
+struct stats_t {
     std::uint64_t tx;
     std::uint64_t rx;
     std::uint64_t load;
     std::uint64_t total;
     boost::optional<std::chrono::high_resolution_clock::time_point> age;
+
+    struct {
+    } current;
+
+    struct {
+    } accumulated;
+
+    /// Time point of last activity. None value means that the slave is inactive.
+    ///
+    /// Useful for determining idle workers.
+    boost::optional<std::chrono::high_resolution_clock::time_point> activity;
+
+    stats_t();
 };
 
 }
@@ -149,6 +162,7 @@ private:
     synchronized<std::shared_ptr<state_t>> state;
 
     std::atomic<std::uint64_t> counter;
+    mutable synchronized<std::chrono::high_resolution_clock::time_point> last_activity;
 
     typedef std::unordered_map<std::uint64_t, std::shared_ptr<channel_t>> channels_map_t;
 
@@ -173,8 +187,11 @@ public:
     std::uint64_t
     load() const;
 
-    slave::slave_stats_t
+    slave::stats_t
     stats() const;
+
+    std::string
+    state_name() const;
 
     std::shared_ptr<control_t>
     activate(std::shared_ptr<session_t> session, upstream<io::worker::control_tag> stream);
@@ -254,11 +271,14 @@ public:
     std::uint64_t
     load() const;
 
-    slave::slave_stats_t
+    slave::stats_t
     stats() const;
 
     bool
     active() const noexcept;
+
+    std::string
+    state() const;
 
     std::shared_ptr<control_t>
     activate(std::shared_ptr<session_t> session, upstream<io::worker::control_tag> stream);

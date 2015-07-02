@@ -24,6 +24,15 @@ namespace ph = std::placeholders;
 
 using namespace cocaine;
 
+slave::stats_t::stats_t():
+     tx{},
+     rx{},
+     load{},
+     total{},
+     age{boost::none},
+     activity{boost::none}
+{}
+
 std::shared_ptr<state_machine_t>
 state_machine_t::create(slave_context context, asio::io_service& loop, cleanup_handler cleanup) {
     auto machine = std::make_shared<state_machine_t>(lock_t(), context, loop, cleanup);
@@ -40,7 +49,8 @@ state_machine_t::state_machine_t(lock_t, slave_context context, asio::io_service
     cleanup(std::move(cleanup)),
     lines(context.profile.crashlog_limit),
     shutdowned(false),
-    counter{}
+    counter{},
+    last_activity(std::chrono::high_resolution_clock::now())
 {
     COCAINE_LOG_TRACE(log, "slave state machine has been initialized");
 }
@@ -77,9 +87,9 @@ state_machine_t::load() const {
     return data.channels->size();
 }
 
-slave::slave_stats_t
+slave::stats_t
 state_machine_t::stats() const {
-    slave::slave_stats_t result { 0, 0, 0, 0, boost::none };
+    slave::stats_t result;
 
     data.channels.apply([&](const channels_map_t& channels) {
         for (const auto& channel : channels) {
@@ -95,21 +105,46 @@ state_machine_t::stats() const {
         result.load = channels.size();
         result.total = counter;
 
+        typedef channels_map_t::value_type value_type;
+
         auto it = std::min_element(
             channels.begin(),
             channels.end(),
-            [&](const std::pair<std::uint64_t, std::shared_ptr<channel_t>>& current,
-                const std::pair<std::uint64_t, std::shared_ptr<channel_t>>& first) -> bool
-        {
-            return current.second->birthstamp() < first.second->birthstamp();
-        });
+            [&](const value_type& current, const value_type& first) -> bool {
+                return current.second->birthstamp() < first.second->birthstamp();
+            }
+        );
 
         if (it != channels.end()) {
             result.age.reset(it->second->birthstamp());
         }
+
+        if (active()) {
+            auto it = std::max_element(
+                channels.begin(),
+                channels.end(),
+                [](const value_type& current, const value_type& first) -> bool {
+                    return current.second->last_activity() < first.second->last_activity();
+                }
+            );
+
+            if (it != channels.end()) {
+                *(last_activity.synchronize()) = it->second->last_activity();
+            }
+
+            result.activity = *(last_activity.synchronize());
+        }
     });
 
     return result;
+}
+
+std::string
+state_machine_t::state_name() const {
+    auto state = *this->state.synchronize();
+    BOOST_ASSERT(state);
+
+    return state->name();
 }
 
 std::shared_ptr<control_t>
@@ -130,15 +165,10 @@ state_machine_t::inject(slave::channel_t& data, channel_handler handler) {
         std::bind(&state_machine_t::revoke, shared_from_this(), id, handler)
     );
 
-    // W2C dispatch.
+    // [Worker -> Client] dispatch.
     auto dispatch = std::make_shared<const worker_rpc_dispatch_t>(
-        data.downstream, [=](const std::error_code& ec) {
-            if (ec) {
-                channel->close_both();
-            } else {
-                channel->close_recv();
-            }
-        }
+        data.downstream,
+        channel
     );
 
     auto state = *this->state.synchronize();
@@ -153,14 +183,8 @@ state_machine_t::inject(slave::channel_t& data, channel_handler handler) {
     COCAINE_LOG_DEBUG(log, "slave has started processing %d channel", id);
     COCAINE_LOG_TRACE(log, "slave has increased its load to %d", load)("channel", id);
 
-    // C2W dispatch.
-    data.dispatch->attach(upstream, [=](const std::error_code& ec) {
-        if (ec) {
-            channel->close_both();
-        } else {
-            channel->close_send();
-        }
-    });
+    // [Clent -> Worker] dispatch.
+    data.dispatch->attach(upstream, channel);
 
     channel->watch();
 
@@ -339,7 +363,7 @@ slave_t::load() const {
     return machine->load();
 }
 
-slave::slave_stats_t
+slave::stats_t
 slave_t::stats() const {
     BOOST_ASSERT(machine);
     return machine->stats();
@@ -350,6 +374,11 @@ slave_t::active() const noexcept {
     BOOST_ASSERT(machine);
 
     return machine->active();
+}
+
+std::string
+slave_t::state() const {
+    return machine->state_name();
 }
 
 std::shared_ptr<control_t>
