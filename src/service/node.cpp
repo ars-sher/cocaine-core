@@ -247,5 +247,5 @@ node_t::info(const std::string& name) const {
         throw cocaine::error_t("app '%s' is not running", name);
     }
 
-    return app->info();
+    return app->info(node::app_t::info_policy_t::verbose);
 }
