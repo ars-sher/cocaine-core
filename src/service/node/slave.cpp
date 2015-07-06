@@ -278,6 +278,9 @@ state_machine_t::revoke(std::uint64_t id, channel_handler handler) {
     COCAINE_LOG_TRACE(log, "slave has decreased its load to %d", load)("channel", id);
     COCAINE_LOG_DEBUG(log, "slave has closed its %d channel", id);
 
+    // Update last activity.
+    *(last_activity.synchronize()) = channel_t::clock_type::now();
+
     // Terminate the state machine if the current state is sealing and there are no more channels
     // left.
     {
