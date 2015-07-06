@@ -32,12 +32,23 @@ protected:
     std::shared_ptr<overseer_t> overseer;
 
 public:
-    explicit balancer_t(std::shared_ptr<overseer_t> overseer):
+    explicit
+    balancer_t(std::shared_ptr<overseer_t> overseer):
         overseer(std::move(overseer))
     {}
 
     virtual
     ~balancer_t() {}
+
+    /// Starts asynchronous operations if any.
+    virtual
+    void
+    start() = 0;
+
+    /// Cancels all asynchronous operations if any.
+    virtual
+    void
+    cancel() = 0;
 
     /// Called on slave spawn.
     ///

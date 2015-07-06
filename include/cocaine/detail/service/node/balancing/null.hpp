@@ -12,6 +12,14 @@ public:
         balancer_t(nullptr)
     {}
 
+    virtual
+    void
+    start() {}
+
+    virtual
+    void
+    cancel() {}
+
     void
     on_slave_spawn(const std::string&) {}
 

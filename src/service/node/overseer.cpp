@@ -62,6 +62,11 @@ overseer_t::~overseer_t() {
     COCAINE_LOG_TRACE(log, "overseer has been destroyed");
 }
 
+std::shared_ptr<asio::io_service>
+overseer_t::io_context() const {
+    return loop;
+}
+
 profile_t
 overseer_t::profile() const {
     return *profile_.synchronize();
@@ -242,12 +247,18 @@ overseer_t::info() const {
 }
 
 void
-overseer_t::balance(std::unique_ptr<balancer_t> balancer) {
+overseer_t::balance(std::shared_ptr<balancer_t> balancer) {
+    if (this->balancer) {
+        this->balancer->cancel();
+    }
+
     if (balancer) {
         this->balancer = std::move(balancer);
     } else {
         this->balancer.reset(new null_balancer_t);
     }
+
+    this->balancer->start();
 }
 
 std::shared_ptr<client_rpc_dispatch_t>
@@ -362,7 +373,7 @@ void
 overseer_t::terminate() {
     COCAINE_LOG_DEBUG(log, "overseer is processing terminate request");
 
-    balance();
+    balance(std::make_shared<null_balancer_t>());
     pool->clear();
 }
 

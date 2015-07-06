@@ -210,7 +210,7 @@ public:
 
         // Create the event balancer.
         // TODO: Rename method.
-        overseer->balance(std::make_unique<load_balancer_t>(overseer));
+        overseer->balance(std::make_shared<load_balancer_t>(overseer));
 
         // Create a TCP server and publish it.
         COCAINE_LOG_TRACE(log, "publishing application service with the context");

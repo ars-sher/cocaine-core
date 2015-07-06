@@ -1,6 +1,10 @@
 #include "cocaine/detail/service/node/balancing/load.hpp"
 
+#include <functional>
+
 #include "cocaine/detail/service/node/overseer.hpp"
+
+namespace ph = std::placeholders;
 
 using namespace cocaine;
 
@@ -54,11 +58,24 @@ bound(const T& min, const T& value, const T& max) {
     return std::max(min, std::min(value, max));
 }
 
+} // namespace
+
+load_balancer_t::load_balancer_t(std::shared_ptr<overseer_t> overseer_):
+    balancer_t(std::move(overseer_)),
+    std::enable_shared_from_this<load_balancer_t>(),
+    idle_timer(*overseer->io_context())
+{}
+
+void
+load_balancer_t::start() {
+    idle_timer.expires_from_now(boost::posix_time::seconds(1));
+    idle_timer.async_wait(std::bind(&load_balancer_t::on_idle_timer, shared_from_this(), ph::_1));
 }
 
-load_balancer_t::load_balancer_t(std::shared_ptr<overseer_t> overseer):
-    balancer_t(std::move(overseer))
-{}
+void
+load_balancer_t::cancel() {
+    idle_timer.cancel();
+}
 
 slave_info
 load_balancer_t::on_request(const std::string&, const std::string& /*id*/) {
@@ -167,4 +184,48 @@ load_balancer_t::balance() {
     while(pool->size() < target) {
         overseer->spawn(pool);
     }
+}
+
+void
+load_balancer_t::on_idle_timer(const std::error_code& ec) {
+    COCAINE_LOG_TRACE(overseer->logger(), "idle timer triggered");
+
+    if (ec == asio::error::operation_aborted) {
+        COCAINE_LOG_TRACE(overseer->logger(), "idle timer, status: aborted");
+        return;
+    }
+
+    COCAINE_LOG_TRACE(overseer->logger(), "checking for idle slaves");
+
+    // TODO: Again, not ideal way to iterate over string->any map. Consider using types.
+    const auto info = overseer->info();
+    const auto pool = info["pool"].as_object();
+    const auto slaves = pool["slaves"].as_object();
+
+    for (const auto& kv : slaves) {
+        const auto& id = kv.first;
+        const auto& slave = kv.second.as_object();
+
+        const auto& state = slave["state"].as_string();
+        COCAINE_LOG_TRACE(overseer->logger(), "state: %s", state);
+
+        if (state == "active") {
+            const auto& load = slave["load"].as_uint();
+            const auto& last_channel_activity = slave["last_channel_activity"].as_int();
+
+            const auto profile = overseer->profile();
+
+            if (load == 0 && last_channel_activity > 1 * 60) {
+                COCAINE_LOG_DEBUG(overseer->logger(), "found idle slave, despawning")(
+                    "id", id,
+                    "timeout", profile.timeout.idle
+                );
+
+                overseer->despawn(id, overseer_t::despawn_policy_t::graceful);
+            }
+        }
+    }
+
+    idle_timer.expires_from_now(boost::posix_time::seconds(1));
+    idle_timer.async_wait(std::bind(&load_balancer_t::on_idle_timer, shared_from_this(), ph::_1));
 }
