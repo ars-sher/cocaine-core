@@ -215,7 +215,7 @@ load_balancer_t::on_idle_timer(const std::error_code& ec) {
 
             const auto profile = overseer->profile();
 
-            if (load == 0 && last_channel_activity > 1 * 60) {
+            if (load == 0 && last_channel_activity > profile.timeout.idle) {
                 COCAINE_LOG_DEBUG(overseer->logger(), "found idle slave, despawning")(
                     "id", id,
                     "timeout", profile.timeout.idle
